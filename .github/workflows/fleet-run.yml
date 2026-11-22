@@ -1,5 +1,4 @@
 name: fleet-run (generic dispatch runner)
-run-name: "fleet-run ${{ inputs.dispatch_id }}"
 
 # A generic, dispatch-only build/test runner for the fleet (Drew,
 # 2026-11-03). The existing pipelines each do exactly one job
@@ -58,6 +57,28 @@ run-name: "fleet-run ${{ inputs.dispatch_id }}"
 # needs no machinery of its own — it is just shell: put
 # `cmd1 && cmd2` (or `cmd1; cmd2`) in one command string.
 #
+# FORK DELTAS (developing-today/fleet — see docs/placement.md; these
+# diverge from upstream dezren39/fleet on purpose and must survive
+# upstream syncs):
+#
+# * A `runner` dispatch input (github | blacksmith) moves the run
+#   job's legs between GitHub-hosted runners (ubuntu-24.04) and
+#   Blacksmith (blacksmith-4vcpu-ubuntu-2404, org repos only — the
+#   Blacksmith app is org-scoped). The setup job always stays on
+#   GitHub-hosted: it is seconds of jq, and keeping it there keeps
+#   Blacksmith minutes meaning "the legs".
+#
+# * Any jobs entry may carry a `cache` object:
+#     {"push_nix": true} — after the command, if the working tree
+#       holds a ./result symlink, sign its closure with
+#       NIX_CACHE_SIGNING_KEY and `nix copy` it to
+#       NIX_CACHE_UPLOAD_URL (the fleet R2 cache), so follow-up jobs
+#       on ANY surface fetch instead of rebuild. Skips quietly when
+#       the secrets are not configured on the hosting repo.
+#     {"actions_key": "...", "actions_path": "..."} — an
+#       actions/cache restore/save of the workspace-relative path
+#       under the given key, for non-nix artifacts.
+#
 # Guardrails, such as they are, are structural: the workflow only
 # runs on workflow_dispatch (dispatching requires write access to
 # this repo) or as a reusable workflow from a caller in this repo,
@@ -81,37 +102,10 @@ run-name: "fleet-run ${{ inputs.dispatch_id }}"
 # fleet-umbrella-verify.yml (docs/execution-surfaces.md). Dispatch
 # behaviour is unchanged.
 #
-# Runner selection (2026-11-06): a fleet job can run on
-# GitHub-hosted runners OR Blacksmith runners — Drew's order was
-# that a fleet job must not be Blacksmith-only, so both providers
-# are first-class here. Two inputs (mirrored in the workflow_call
-# form below):
-#
-#   runner        - the run legs: github (ubuntu-24.04, the
-#                   default) or blacksmith
-#                   (blacksmith-4vcpu-ubuntu-2404)
-#   setup_runner  - the setup job: same providers, same mapping,
-#                   same default
-#
-# The input names and runner labels mirror org-run in
-# developing-today/code (the legs' `runner` input there came from
-# PR #5417; `setup_runner` from PR #6639). One deliberate
-# difference: org-run defaults setup_runner to blacksmith, while
-# fleet-run defaults BOTH inputs to github. This repo is a
-# personal repo and Blacksmith is orgs-only — it cannot run here
-# at all — so the default has to be the provider that works
-# everywhere; the org forks this file propagates to can pass
-# blacksmith explicitly where the Blacksmith app is installed.
-# Callers that pass neither input (fleet-umbrella-verify.yml
-# today) see no change in behaviour.
-#
-# Blacksmith runners are drop-in Ubuntu 24.04 runners, so the
-# legs' container spec below (the fleet-build:full image, run as
-# root) works unchanged on either provider; no leg step assumes
-# GitHub-hosted hardware. In the workflow_call form the two
-# runner inputs are plain strings (workflow_call inputs have no
-# choice type): any value other than blacksmith selects the
-# GitHub-hosted label, exactly as in the dispatch form's mapping.
+# Runner selection (2026-11-06): run legs default to GitHub-hosted;
+# Blacksmith is explicit and guarded to the org repository where the
+# app is installed. Setup/validation stays on GitHub-hosted Linux so
+# it does not consume paid runner minutes.
 #
 # The legs run in the published org image
 # ghcr.io/developing-today/fleet-build:full as root: the pinned
@@ -120,9 +114,18 @@ run-name: "fleet-run ${{ inputs.dispatch_id }}"
 # privileges the way the variant legs do:
 #   runuser -u vscode -- env HOME=/home/vscode bash -lc '...'
 #
-# Checkout of the target repos uses the classic PAT in
-# GHCR_ORG_PAT (repo scope; it can read every repo on the allowlist —
-# this repo's GITHUB_TOKEN could only read this one).
+# Checkout auth follows the split developing-today/code's
+# org-run.yml proved (dezren39/fleet#74): the classic PAT in
+# GHCR_ORG_PAT (repo scope; it can read all five fleet repos —
+# this repo's GITHUB_TOKEN could only read this one) is used
+# when it is actually present on the hosting repo, and only
+# then. When it is absent — a fresh fork before secret
+# provisioning, say — the leg does NOT hand actions/checkout
+# an empty token (checkout hard-fails with "Input required
+# and not supplied: token"); the resolve step below reports
+# the token as unavailable and the (all-public) targets are
+# cloned anonymously instead, with the same depth/ref
+# semantics. An empty token input is never emitted.
 
 on:
   workflow_dispatch:
@@ -158,26 +161,13 @@ on:
         required: false
         default: 60
       runner:
-        description: "Runner provider for the legs: github (ubuntu-24.04, default) or blacksmith (blacksmith-4vcpu-ubuntu-2404; org surfaces only)"
+        description: "Runner provider for the legs: github (ubuntu-24.04) or blacksmith (blacksmith-4vcpu-ubuntu-2404; org surfaces only)"
         type: choice
         required: false
         default: "github"
         options:
           - github
           - blacksmith
-      setup_runner:
-        description: "Runner provider for the setup job: github (ubuntu-24.04, default) or blacksmith (blacksmith-4vcpu-ubuntu-2404; org surfaces only)"
-        type: choice
-        required: false
-        default: "github"
-        options:
-          - github
-          - blacksmith
-      dispatch_id:
-        description: "Unique id for this dispatch (fleet-place run correlation, developing-today/code#8371); surfaced in the run display title via run-name - blank for manual dispatches"
-        type: string
-        required: false
-        default: ""
   workflow_call:
     # Reusable form: a caller workflow in this repo runs the same
     # setup/run jobs with inputs mirroring the dispatch ones above.
@@ -210,24 +200,20 @@ on:
         required: false
         default: 60
       runner:
-        description: "Runner provider for the legs: github (ubuntu-24.04, default) or blacksmith (blacksmith-4vcpu-ubuntu-2404; org surfaces only)"
+        description: "Runner provider for the legs: github (ubuntu-24.04) or blacksmith (blacksmith-4vcpu-ubuntu-2404; org surfaces only)"
         type: string
         required: false
         default: "github"
-      setup_runner:
-        description: "Runner provider for the setup job: github (ubuntu-24.04, default) or blacksmith (blacksmith-4vcpu-ubuntu-2404; org surfaces only)"
-        type: string
-        required: false
-        default: "github"
-      dispatch_id:
-        description: "Unique id for this dispatch (fleet-place run correlation, developing-today/code#8371); surfaced in the run display title via run-name - blank for manual dispatches"
-        type: string
-        required: false
-        default: ""
     secrets:
       GHCR_ORG_PAT:
-        description: "Classic PAT the legs use to check out target repos (repo scope)"
-        required: true
+        description: "Optional PAT for private target repos; public targets use anonymous clones when it is absent"
+        required: false
+      NIX_CACHE_SIGNING_KEY:
+        description: "Optional signing key for Nix closure uploads"
+        required: false
+      NIX_CACHE_UPLOAD_URL:
+        description: "Optional Nix cache upload URL"
+        required: false
 
 permissions:
   contents: read
@@ -236,10 +222,11 @@ defaults:
   run:
     shell: bash
 
+
 jobs:
   setup:
     name: setup
-    runs-on: ${{ inputs.setup_runner == 'blacksmith' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       matrix: ${{ steps.resolve.outputs.matrix }}
@@ -251,6 +238,7 @@ jobs:
           SINGLE_REPO: ${{ inputs.repo }}
           SINGLE_REF: ${{ inputs.ref }}
           SINGLE_COMMAND: ${{ inputs.command }}
+          RUNNER_PROVIDER: ${{ inputs.runner }}
         run: |
           set -euo pipefail
 
@@ -258,6 +246,10 @@ jobs:
             echo "::error::$1"
             exit 1
           }
+
+          if [ "$RUNNER_PROVIDER" = "blacksmith" ] && [ "$GITHUB_REPOSITORY" != "developing-today/fleet" ]; then
+            fail "Blacksmith is configured only for developing-today/fleet; select runner=github on this surface"
+          fi
 
           allowlist='["developing-today/code", "developing-today/opencode", "developing-today/openchamber", "dezren39/darwin-nix", "dezren39/fleet", "developing-today/zettel", "developing-today/.github", "developing-today/zulip-archive", "developing-today/hardware-doc", "dezren39/zettel", "dezren39/hatch"]'
 
@@ -299,7 +291,7 @@ jobs:
                     elif (has("depth") and (((.depth | type) != "number") or (.depth != (.depth | floor)) or (.depth < 0))) then
                       error("entry \($i) repo \(.repo) has invalid depth \(.depth) — must be an integer >= 0")
                     else
-                      {repo: .repo, ref: (.ref // ""), depth: (.depth // 1), command: $e.command, mode: "single"}
+                      {repo: .repo, ref: (.ref // ""), depth: (.depth // 1), command: $e.command, mode: "single", cache_push_nix: ($e.cache.push_nix // false), cache_key: ($e.cache.actions_key // ""), cache_path: ($e.cache.actions_path // "")}
                     end
                   end
                 elif ($e | has("together")) then
@@ -320,7 +312,7 @@ jobs:
                     | if (($bases | length) != ($bases | unique | length)) then
                         error("entry \($i) (together) has duplicate repo basenames: \($bases | join(", "))")
                       else
-                        {repo: ($bases | join("+")), ref: "", command: $e.command, mode: "together", checkouts: $cos}
+                        {repo: ($bases | join("+")), ref: "", command: $e.command, mode: "together", checkouts: $cos, cache_push_nix: ($e.cache.push_nix // false), cache_key: ($e.cache.actions_key // ""), cache_path: ($e.cache.actions_path // "")}
                       end
                   end
                 else
@@ -329,7 +321,7 @@ jobs:
                   elif (($e | has("depth")) and ((($e.depth | type) != "number") or ($e.depth != ($e.depth | floor)) or ($e.depth < 0))) then
                     error("entry \($i) (flat) has invalid depth \($e.depth) — must be an integer >= 0")
                   else
-                    {repo: $e.repo, ref: ($e.ref // ""), depth: ($e.depth // 1), command: $e.command, mode: "single"}
+                    {repo: $e.repo, ref: ($e.ref // ""), depth: ($e.depth // 1), command: $e.command, mode: "single", cache_push_nix: ($e.cache.push_nix // false), cache_key: ($e.cache.actions_key // ""), cache_path: ($e.cache.actions_path // "")}
                   end
                 end
             ]' <<<"$entries") || fail "jobs validation failed (see the error above)"
@@ -404,8 +396,26 @@ jobs:
             echo "::error::timeout_minutes must be between 5 and 120 (got $TIMEOUT_MINUTES)"
             exit 1
           fi
-      - name: Check out the target repo
-        if: ${{ matrix.mode == 'single' }}
+      - name: Resolve checkout auth
+        id: auth
+        env:
+          GHCR_ORG_PAT: ${{ secrets.GHCR_ORG_PAT }}
+        run: |
+          set -euo pipefail
+          # Checkout auth split (org-run pattern, dezren39/fleet#74):
+          # actions/checkout hard-fails on an explicitly empty token
+          # input, so the token is used only when one is actually
+          # provisioned on this repo; otherwise the leg falls back
+          # to anonymous clones of the (all-public) targets.
+          if [ -n "$GHCR_ORG_PAT" ]; then
+            echo "checkout auth: GHCR_ORG_PAT (provisioned)"
+            echo "has_token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "checkout auth: anonymous (GHCR_ORG_PAT not provisioned on this repo)"
+            echo "has_token=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check out the target repo (GHCR_ORG_PAT)
+        if: ${{ matrix.mode == 'single' && steps.auth.outputs.has_token == 'true' }}
         uses: actions/checkout@v4
         with:
           repository: ${{ matrix.repo }}
@@ -413,6 +423,22 @@ jobs:
           fetch-depth: ${{ matrix.depth }}
           token: ${{ secrets.GHCR_ORG_PAT }}
           path: target
+      - name: Check out the target repo (public repos, anonymous)
+        if: ${{ matrix.mode == 'single' && steps.auth.outputs.has_token != 'true' }}
+        env:
+          TARGET_REPO: ${{ matrix.repo }}
+          TARGET_REF: ${{ matrix.ref }}
+          TARGET_DEPTH: ${{ matrix.depth }}
+        run: |
+          set -euo pipefail
+          clone_args=()
+          if [ "$TARGET_DEPTH" -ge 1 ]; then
+            clone_args+=(--depth "$TARGET_DEPTH")
+          fi
+          if [ -n "$TARGET_REF" ]; then
+            clone_args+=(--branch "$TARGET_REF")
+          fi
+          git clone "${clone_args[@]}" "https://github.com/${TARGET_REPO}.git" "$GITHUB_WORKSPACE/target"
       - name: Clone the together repos side-by-side
         if: ${{ matrix.mode == 'together' }}
         env:
@@ -420,7 +446,9 @@ jobs:
           CLONE_TOKEN: ${{ secrets.GHCR_ORG_PAT }}
         run: |
           set -euo pipefail
-          echo "::add-mask::$CLONE_TOKEN"
+          if [ -n "$CLONE_TOKEN" ]; then
+            echo "::add-mask::$CLONE_TOKEN"
+          fi
           mkdir -p "$GITHUB_WORKSPACE/repos"
           while read -r item; do
             repo=$(jq -r '.repo' <<<"$item")
@@ -435,8 +463,19 @@ jobs:
             if [ -n "$ref" ]; then
               clone_args+=(--branch "$ref")
             fi
-            git clone "${clone_args[@]}" "https://x-access-token:${CLONE_TOKEN}@github.com/${repo}.git" "$dest"
+            if [ -n "$CLONE_TOKEN" ]; then
+              url="https://x-access-token:${CLONE_TOKEN}@github.com/${repo}.git"
+            else
+              url="https://github.com/${repo}.git"
+            fi
+            git clone "${clone_args[@]}" "$url" "$dest"
           done < <(jq -c '.[]' <<<"$CHECKOUTS_JSON")
+      - name: Restore actions/cache (opt-in per entry)
+        if: ${{ matrix.cache_key != '' }}
+        uses: actions/cache@v4
+        with:
+          path: ${{ matrix.cache_path }}
+          key: ${{ matrix.cache_key }}
       - name: Run command
         if: ${{ matrix.mode == 'single' }}
         env:
@@ -461,3 +500,34 @@ jobs:
             echo "  $repo -> repos/$base (HEAD $(git -C "repos/$base" rev-parse HEAD))"
           done < <(jq -c '.[]' <<<"$CHECKOUTS_JSON")
           bash -lc "$FLEET_RUN_COMMAND"
+
+      - name: Push build results to the fleet R2 cache (opt-in per entry)
+        if: ${{ matrix.cache_push_nix }}
+        env:
+          NIX_CACHE_SIGNING_KEY: ${{ secrets.NIX_CACHE_SIGNING_KEY }}
+          NIX_CACHE_UPLOAD_URL: ${{ secrets.NIX_CACHE_UPLOAD_URL }}
+          LEG_MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          # Same sign+copy pattern as containers/fleet-build/export.sh.
+          if [ -z "$NIX_CACHE_SIGNING_KEY" ] || [ -z "$NIX_CACHE_UPLOAD_URL" ]; then
+            echo "::notice::cache push requested but NIX_CACHE_SIGNING_KEY / NIX_CACHE_UPLOAD_URL are not configured on this repo — skipping (see docs/placement.md)"
+            exit 0
+          fi
+          workdir="$GITHUB_WORKSPACE"
+          if [ "$LEG_MODE" = "single" ]; then
+            workdir="$GITHUB_WORKSPACE/target"
+          fi
+          cd "$workdir"
+          if [ ! -e ./result ]; then
+            echo "::notice::no ./result symlink in $workdir — nothing to push"
+            exit 0
+          fi
+          out=$(readlink -f ./result)
+          keyfile=$(mktemp)
+          chmod 600 "$keyfile"
+          printf '%s' "$NIX_CACHE_SIGNING_KEY" > "$keyfile"
+          nix path-info --recursive "$out" | nix store sign --key-file "$keyfile" --stdin
+          nix copy --to "$NIX_CACHE_UPLOAD_URL" "$out"
+          rm -f "$keyfile"
+          echo "pushed $out to the fleet R2 cache for follow-up jobs on any surface"
