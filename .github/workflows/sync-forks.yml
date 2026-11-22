@@ -19,13 +19,18 @@ name: sync-forks (push main out to every fork)
 #
 # Auth: the classic PAT in this repo's GHCR_ORG_PAT secret. The
 # workflow's own GITHUB_TOKEN cannot write other repositories, and
-# dispatching requires write access here, which is the gate. Known
-# caveat: fork mains locked by a ruleset whose only bypass is the
-# developing.today App (developing-today/fleet,
-# developing-today-forks/fleet) may refuse a PAT sync — those forks
-# keep converging through their App-driven daily pull, and their
-# refusal shows up on this run's failure list, which is the signal
-# to extend their bypass or accept the daily cadence for them.
+# dispatching requires write access here, which is the gate. The
+# PAT must carry the `workflow` scope in addition to `repo`: any
+# sync whose delta touches .github/workflows/ is refused without
+# it (proven by the first run, 2026-11-22 — all 102 forks refused
+# on exactly that gate when this workflow file itself landed).
+# Known caveat: fork mains locked by a ruleset whose only bypass
+# is the developing.today App (developing-today/fleet,
+# developing-today-forks/fleet) may refuse a PAT sync — those
+# forks keep converging through their App-driven daily pull, and
+# their refusal shows up on this run's failure list, which is the
+# signal to extend their bypass or accept the daily cadence for
+# them.
 #
 # Failure contract (Drew, 2026-11-22): attempt EVERY fork, no
 # matter how many fail. The job fails only at the END, with the
@@ -125,8 +130,13 @@ jobs:
           fi
 
           # One todo issue in the code repo carrying the failure
-          # list. If filing itself fails, the job still fails with
-          # the list in the summary and log above.
+          # list. Filed through the REST API, not `gh issue create`:
+          # issue creation via GraphQL is a separate rate-limit
+          # bucket that this PAT's owner can be walled in precisely
+          # when a big sync just ran (proven by the first run,
+          # 2026-11-22 — the list survived only in the job summary).
+          # If filing itself fails, the job still fails with the
+          # list in the summary and log above.
           body="$work/issue-body.md"
           {
             echo "The sync-forks workflow in dezren39/fleet pushed \`$BRANCH\`"
@@ -140,9 +150,10 @@ jobs:
             echo ""
             echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           } > "$body"
-          if gh issue create --repo "$TODO_REPO" \
-               --title "fleet: fork sync failed for $n_failed fork(s) after $UPSTREAM@${GITHUB_SHA:0:7}" \
-               --body-file "$body"; then
+          payload="$work/issue.json"
+          jq -n --arg title "fleet: fork sync failed for $n_failed fork(s) after $UPSTREAM@${GITHUB_SHA:0:7}" \
+                --rawfile body "$body" '{title: $title, body: $body}' > "$payload"
+          if gh api -X POST "repos/$TODO_REPO/issues" --input "$payload" --jq '.html_url'; then
             echo "Filed the failure list as an issue in $TODO_REPO."
           else
             echo "::warning::Could not file the failure issue in $TODO_REPO; the list stands in the job summary."
