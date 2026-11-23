@@ -482,9 +482,12 @@ jobs:
       # cache configuration are already there" was aspirational for
       # cargo/bun and wrong for root nix.
       - name: Prepare executor environment
-        env:
-          FLEET_TARGET_DIR: ${{ github.workspace }}/target
-        run: bash .fleet-runner/.github/scripts/fleet-executor-prep.sh
+        run: |
+          # $GITHUB_WORKSPACE, not the github.workspace expression:
+          # in a job container the expression is the HOST path,
+          # which does not exist inside the container.
+          export FLEET_TARGET_DIR="$GITHUB_WORKSPACE/target"
+          bash .fleet-runner/.github/scripts/fleet-executor-prep.sh
       - name: Restore actions/cache (opt-in per entry)
         if: ${{ matrix.cache_key != '' }}
         uses: actions/cache@v4
