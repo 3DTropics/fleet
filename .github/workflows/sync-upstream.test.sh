@@ -14,22 +14,25 @@ set -euo pipefail
 cd "$(dirname "$0")"
 f=sync-upstream.yml
 
-fail() { echo "FAIL: $*" >&2; exit 1; }
+fail() {
+  echo "FAIL: $*" >&2
+  exit 1
+}
 
-grep -Fq "if: github.repository == 'developing-today/fleet' || github.repository == 'developing-today-forks/fleet'" "$f" \
-  || fail "job guard must scope the pull to the two App-mirror forks (#87)"
+grep -Fq "if: github.repository == 'developing-today/fleet' || github.repository == 'developing-today-forks/fleet'" "$f" ||
+  fail "job guard must scope the pull to the two App-mirror forks (#87)"
 
 if grep -Fq "github.repository != 'dezren39/fleet'" "$f"; then
   fail "old upstream-only guard is back: the pull would run on forks where it cannot authenticate (#87)"
 fi
 
-grep -Fq "app-id: 5454422" "$f" \
-  || fail "app-id must stay 5454422 (the developing.today app the mirror rulesets bypass)"
+grep -Fq "app-id: 5454422" "$f" ||
+  fail "app-id must stay 5454422 (the developing.today app the mirror rulesets bypass)"
 
-grep -Fq "secrets.FLEET_APP_PRIVATE_KEY" "$f" \
-  || fail "the token mint must keep reading FLEET_APP_PRIVATE_KEY"
+grep -Fq "secrets.FLEET_APP_PRIVATE_KEY" "$f" ||
+  fail "the token mint must keep reading FLEET_APP_PRIVATE_KEY"
 
-grep -Fq "SCOPE (#87)" "$f" \
-  || fail "the header must keep the #87 scope note explaining the guard"
+grep -Fq "SCOPE (#87)" "$f" ||
+  fail "the header must keep the #87 scope note explaining the guard"
 
 echo "ok: sync-upstream is scoped to the two App-mirror forks (#87)"
