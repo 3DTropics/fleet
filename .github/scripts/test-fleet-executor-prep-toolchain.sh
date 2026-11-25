@@ -34,12 +34,12 @@ make_env() {
 
   cat >"$root/cargo/bin/rustup" <<'STUB'
 #!/usr/bin/env bash
-echo "rustup $* cwd=$PWD" >>"$RUSTUP_STUB_LOG"
 if [ "${1:-}" = "toolchain" ] && [ "${2:-}" = "install" ]; then
   ch="${3:-}"
   if [ -z "$ch" ]; then
     ch="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' ./rust-toolchain.toml | head -n 1)"
   fi
+  echo "rustup toolchain install $ch cwd=$PWD" >>"$RUSTUP_STUB_LOG"
   mkdir -p "$RUSTUP_HOME/toolchains/$ch-x86_64-unknown-linux-gnu"
   exit 0
 fi
@@ -49,15 +49,18 @@ if [ "${1:-}" = "toolchain" ] && [ "${2:-}" = "list" ]; then
 fi
 if [ "${1:-}" = "default" ]; then
   if [ -n "${2:-}" ]; then
+    echo "rustup default-set $2 cwd=$PWD" >>"$RUSTUP_STUB_LOG"
     printf '%s' "$2" >"$RUSTUP_HOME/stub-default"
     exit 0
   fi
+  echo "rustup default-get cwd=$PWD" >>"$RUSTUP_STUB_LOG"
   if [ -f "$RUSTUP_HOME/stub-default" ]; then
     cat "$RUSTUP_HOME/stub-default"
     exit 0
   fi
   exit 1
 fi
+echo "rustup $* cwd=$PWD" >>"$RUSTUP_STUB_LOG"
 exit 0
 STUB
   cat >"$root/cargo/bin/cargo" <<'STUB'
@@ -111,7 +114,7 @@ run_prep "$s2" || fail "scenario 2: prep exited non-zero: $(cat "$s2/prep.log")"
 installs="$(count_calls '^rustup toolchain install ' "$s2/rustup-calls.log")"
 [ "$installs" = 0 ] ||
   fail "scenario 2: expected no installs on a warm home, got $installs: $(cat "$s2/rustup-calls.log")"
-sets="$(count_calls '^rustup default [^ ]' "$s2/rustup-calls.log")"
+sets="$(count_calls '^rustup default-set ' "$s2/rustup-calls.log")"
 [ "$sets" = 0 ] ||
   fail "scenario 2: expected no default override, got $sets: $(cat "$s2/rustup-calls.log")"
 [ "$(cat "$s2/rustup/stub-default")" = "1.85.0-x86_64-unknown-linux-gnu" ] ||
