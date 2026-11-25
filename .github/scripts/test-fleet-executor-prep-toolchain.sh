@@ -82,7 +82,9 @@ run_prep() {
     bash "$prep" >"$root/prep.log" 2>&1
 }
 
-count_calls() { grep -c "$1" "$2" 2>/dev/null || true; }
+count_calls() {
+  if [ -f "$2" ]; then grep -c "$1" "$2" || true; else echo 0; fi
+}
 
 # --- Scenario 1: cold restored cache — shims present, no
 # toolchains installed, no default configured.
