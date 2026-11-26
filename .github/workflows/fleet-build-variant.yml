@@ -314,10 +314,7 @@ jobs:
           fi
           git commit -m "fleet-build: advance submodule pins to latest (gated variant run ${{ github.run_id }})"
           git pull --rebase origin main
-          # PROOF-ONLY (felix/88 lane, reverted before the PR): redirect
-          # the pin push to the proof branch so the verification run
-          # cannot land the unreviewed fix on main.
-          git push origin HEAD:felix/88-variant-cache-auth
+          git push origin HEAD:main
 
   report:
     needs: [check, warm-export, build, commit-pins]
